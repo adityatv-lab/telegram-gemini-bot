@@ -1,92 +1,66 @@
+# bot.py
 import os
 import logging
-import asyncio
-import threading
 import requests
-from flask import Flask, request
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from flask import Flask, request, jsonify
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
-# Setup logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-
-# Flask app for Render
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "🚀 Telegram Gemini Bot is up and running!", 200
-
-# Load keys from environment
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 
 if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
-    logging.error("❌ Missing TELEGRAM_TOKEN or GEMINI_API_KEY in environment variables.")
-    raise Exception("Missing TELEGRAM_TOKEN or GEMINI_API_KEY in environment variables.")
+    raise RuntimeError("Missing TELEGRAM_TOKEN or GEMINI_API_KEY in environment")
 
-# Configure Gemini API
+# Configure Gemini (Google GenAI SDK)
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
 
-# Telegram bot setup
-application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# Start command
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "Hey there 👋! I’m your *AditvGPT*, powered by Gemini AI.\n\n"
-        "Ask me *anything* — text, ideas, or even coding questions!"
-    )
+TELEGRAM_SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-# Handle messages
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_message = update.message.text
-    logging.info(f"📩 User said: {user_message}")
+def send_telegram(chat_id: int, text: str):
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    r = requests.post(TELEGRAM_SEND_URL, json=payload, timeout=15)
+    logging.info("Telegram sendMessage status: %s %s", r.status_code, r.text)
+    return r
 
-    try:
-        # Run Gemini API call in executor to prevent blocking async loop
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, model.generate_content, user_message)
+@app.route("/")
+def root():
+    return "Telegram Gemini webhook up"
 
-        # Send Gemini response back to Telegram
-        await update.message.reply_text(response.text)
-
-    except Exception as e:
-        logging.error(f"💥 Error in handle_message: {e}")
-        await update.message.reply_text("Sorry, an error occurred. 😢")
-
-# Add handlers
-application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-# ✅ Flask Webhook endpoint for Telegram
-@app.route('/webhook', methods=['POST'])
+@app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
+    data = request.get_json(force=True)
+    logging.info("Received update: %s", data)
+
+    # minimal validation and handling text messages
+    message = data.get("message") or data.get("edited_message")
+    if not message:
+        return jsonify({"status":"ok"})
+
+    chat_id = message["chat"]["id"]
+    user_text = message.get("text", "")
+    if not user_text:
+        send_telegram(chat_id, "Sorry, I only handle text messages for now.")
+        return jsonify({"status":"ok"})
+
     try:
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        application.update_queue.put_nowait(update)
-        return "Webhook received!", 200
+        # Call Gemini to generate a reply
+        # Use the simple text generation call. Adjust model name if needed.
+        # NOTE: this uses google.generativeai SDK methods. If your SDK version differs,
+        # consult the SDK docs — this is the typical pattern.
+        response = genai.generate_text(model="gemini-1.5-flash", prompt=user_text, max_output_tokens=512)
+        reply = response.text if hasattr(response, "text") else str(response)
+        if not reply:
+            reply = "I couldn't make a reply — try again later."
     except Exception as e:
-        logging.error(f"❌ Webhook error: {e}")
-        return "Error", 500
+        logging.exception("Gemini error")
+        reply = "Sorry, Gemini returned an error."
 
-# Function to start bot in background
-def run_polling():
-    logging.info("✅ Starting bot polling...")
-    application.run_polling()
-
-# Main entry point
-if __name__ == "__main__":
-    # Run Flask app and bot together
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))).start()
-    run_polling()
-
+    send_telegram(chat_id, reply)
+    return jsonify({"status":"ok"})
