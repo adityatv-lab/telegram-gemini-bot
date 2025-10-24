@@ -1,57 +1,82 @@
 import os
 import logging
 import asyncio
-import threading
-from flask import Flask
-import google.generativeai as genai
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+import google.generativeai as genai
+from dotenv import load_dotenv
+from flask import Flask
 
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+# Load environment variables
+load_dotenv()
 
+# Setup logging
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-pro')
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "Hi! I am your Gemini-powered assistant. Send me a message and I'll help you."
-    )
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_message = update.message.text
-    try:
-        response = model.generate_content(user_message)
-        await update.message.reply_text(response.text)
-    except Exception as e:
-        logging.error(f"An error occurred: {e}")
-        await update.message.reply_text("Sorry, an error occurred.")
-
+# Flask app for Render
 app = Flask(__name__)
 
 @app.route('/')
-def index():
-    return "Bot is running!"
+def home():
+    return "🚀 Telegram Gemini Bot is up and running!"
 
-async def main_bot():
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+# Load keys from environment
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-    async with application:
-        await application.initialize()
-        await application.updater.start_polling()
-        await application.start()
-        await asyncio.Event().wait()
+if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
+    logging.error("❌ Missing TELEGRAM_TOKEN or GEMINI_API_KEY in environment variables.")
+    raise Exception("Missing TELEGRAM_TOKEN or GEMINI_API_KEY in environment variables.")
 
-def run_bot_in_thread():
-    asyncio.run(main_bot())
+# Configure Gemini API
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-bot_thread = threading.Thread(target=run_bot_in_thread)
-bot_thread.daemon = True
-bot_thread.start()
+# Start command
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "Hey there 👋! I’m your *AditvGPT*, powered by Gemini AI.\n\n"
+        "Ask me *anything* — text, ideas, or even coding questions!"
+    )
+
+# Handle messages
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_message = update.message.text
+    logging.info(f"📩 User said: {user_message}")
+
+    try:
+        # Run Gemini API call in executor to prevent blocking async loop
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, model.generate_content, user_message)
+
+        # Send the Gemini response back to Telegram
+        await update.message.reply_text(response.text)
+
+    except Exception as e:
+        logging.error(f"💥 Error in handle_message: {e}")
+        await update.message.reply_text("Sorry, an error occurred. 😢")
+
+# Main bot runner
+def run_bot():
+    app_builder = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    # Commands and message handlers
+    app_builder.add_handler(CommandHandler("start", start))
+    app_builder.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    logging.info("✅ Bot started successfully. Listening for messages...")
+
+    # Start the Telegram bot
+    app_builder.run_polling()
+
+# Entry point
+if __name__ == "__main__":
+    import threading
+
+    # Run Flask app and Telegram bot in parallel (for Render)
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))).start()
+    run_bot()
+
