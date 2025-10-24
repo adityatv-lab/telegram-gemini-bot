@@ -1,11 +1,13 @@
 import os
 import logging
 import asyncio
+import threading
+import requests
+from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import google.generativeai as genai
 from dotenv import load_dotenv
-from flask import Flask
 
 # Load environment variables
 load_dotenv()
@@ -21,7 +23,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🚀 Telegram Gemini Bot is up and running!"
+    return "🚀 Telegram Gemini Bot is up and running!", 200
 
 # Load keys from environment
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -34,6 +36,9 @@ if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
 # Configure Gemini API
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
+
+# Telegram bot setup
+application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
 # Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -52,31 +57,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(None, model.generate_content, user_message)
 
-        # Send the Gemini response back to Telegram
+        # Send Gemini response back to Telegram
         await update.message.reply_text(response.text)
 
     except Exception as e:
         logging.error(f"💥 Error in handle_message: {e}")
         await update.message.reply_text("Sorry, an error occurred. 😢")
 
-# Main bot runner
-def run_bot():
-    app_builder = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+# Add handlers
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Commands and message handlers
-    app_builder.add_handler(CommandHandler("start", start))
-    app_builder.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+# ✅ Flask Webhook endpoint for Telegram
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    try:
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        application.update_queue.put_nowait(update)
+        return "Webhook received!", 200
+    except Exception as e:
+        logging.error(f"❌ Webhook error: {e}")
+        return "Error", 500
 
-    logging.info("✅ Bot started successfully. Listening for messages...")
+# Function to start bot in background
+def run_polling():
+    logging.info("✅ Starting bot polling...")
+    application.run_polling()
 
-    # Start the Telegram bot
-    app_builder.run_polling()
-
-# Entry point
+# Main entry point
 if __name__ == "__main__":
-    import threading
-
-    # Run Flask app and Telegram bot in parallel (for Render)
+    # Run Flask app and bot together
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))).start()
-    run_bot()
+    run_polling()
 
