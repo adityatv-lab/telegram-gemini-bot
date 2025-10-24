@@ -1,12 +1,1 @@
-services:
-  - type: web
-    name: telegram-gemini-bot
-    env: python
-    buildCommand: |
-      pip install --upgrade pip
-      pip install --upgrade python-telegram-bot==20.7
-      pip install -r requirements.txt
-    startCommand: gunicorn bot:app
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.10.14
+
