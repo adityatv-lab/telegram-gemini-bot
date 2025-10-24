@@ -1,58 +1,65 @@
 import os
 import logging
-import threading
-from flask import Flask, jsonify
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import google.generativeai as genai
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Make sure to set your environment variables in Render
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-# Get environment variables
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-PORT = int(os.getenv("PORT", 8080))
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-if not TELEGRAM_TOKEN or not GOOGLE_API_KEY:
-    raise ValueError("Missing TELEGRAM_BOT_TOKEN or GOOGLE_API_KEY environment variable")
+# Configure the Gemini API
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-pro')
 
-# Configure Gemini API
-genai.configure(api_key=GOOGLE_API_KEY)
-model = genai.GenerativeModel("gemini-pro")
+# ---- Your Bot's Functions ----
 
-# Telegram handlers
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Hey Adi! Your Gemini bot is online and ready!")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sends a welcome message when the /start command is issued."""
+    await update.message.reply_text(
+        "Hi! I am your Gemini-powered assistant. Send me a message, and I will do my best to help you."
+    )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_input = update.message.text
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles regular text messages and gets a response from Gemini."""
+    user_message = update.message.text
+    
     try:
-        response = model.generate_content(user_input)
+        # Send the user's message to the Gemini model
+        response = model.generate_content(user_message)
+        
+        # Reply to the user with the model's response
         await update.message.reply_text(response.text)
+        
     except Exception as e:
-        logger.error(f"Error: {e}")
-        await update.message.reply_text("⚠️ Error talking to Gemini API, try again later.")
+        logging.error(f"An error occurred: {e}")
+        await update.message.reply_text("Sorry, I encountered an error while processing your request.")
 
-# Start Telegram polling
-def run_bot():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.run_polling()
+# ---- Main Section to Run the Bot ----
 
-# Flask web app for Render health check
-flask_app = Flask(__name__)
+def main() -> None:
+    """Start the bot."""
+    logging.info("Starting bot...")
 
-@flask_app.route("/")
-def home():
-    return "✅ Bot is running!"
+    # Create the Application and pass it your bot's token.
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-@flask_app.route("/healthz")
-def healthz():
-    return jsonify({"status": "ok"})
+    # Add handlers for different commands and messages
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+    # Start the Bot
+    # The bot will run until you press Ctrl-C or the process receives a signal to stop.
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
     flask_app.run(host="0.0.0.0", port=PORT)
